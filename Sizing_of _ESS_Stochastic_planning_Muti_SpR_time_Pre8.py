@@ -50,7 +50,7 @@ class OnGrid_realtime_opt:
         # 最佳化排程結果
         self.opt_result_record_data()
     def read_opt_parameter(self): 
-        self.planning_year = 30
+        self.planning_year = 10
         self.discount_rate = 1.875/100
         self.spr_status = 1     # 0:不參與輔助服務 1:參與即時備轉 
     def read_ESS_parameter(self): 
@@ -66,7 +66,6 @@ class OnGrid_realtime_opt:
         self.Ess_efficiency = 95/100
         self.ess_cost = 16000                                                             #電池建置價格
         self.pcs_cost = 3500                                                              #pcs建置價格
-
         # aging
         self.cal_a = 3.36 * (10**(-6))
         self.cal_b = 2.12 * (10**(-5))
@@ -123,8 +122,6 @@ class OnGrid_realtime_opt:
         else:
             self.ASS_time = [-1,int(13*self.time_scale),int(14*self.time_scale),int(15*self.time_scale),int(16*self.time_scale),int(17*self.time_scale),int(18*self.time_scale)]
             self.ASS_time_uncer_prob = [(365-35)/365, (35/365)*0.03, (35/365)*0.06, (35/365)*0.12, (35/365)*0.15, (35/365)*0.54, (35/365)*0.1]
-        # self.ASS_time = [0, 1]
-        # self.ASS_time_uncer_prob = [(365-self.SpR_exe_times)/365, self.SpR_exe_times/365]
         self.tou_uncer_prob = [212/365,153/365]
     def centralize_optimization(self):
         Y = self.planning_year
@@ -163,6 +160,8 @@ class OnGrid_realtime_opt:
         Uess_cycle = np.array([[[[m.addVar(lb=0,ub=1,vtype=GRB.BINARY) for i in len_n] for netload_scenario in range(self.netload_scenario_nums)]for ASS_day_scenario in range(len(self.ASS_time))]for TOU_scenario in range(len(self.tou_uncer_prob))])
         # battery aging
         cal_aging = np.array([[[[m.addVar(lb=0,vtype=GRB.CONTINUOUS)] for netload_scenario in range(self.netload_scenario_nums)]for ASS_day_scenario in range(len(self.ASS_time))]for TOU_scenario in range(len(self.tou_uncer_prob))])
+        cyc_aging = np.array([[[[m.addVar(lb=0,vtype=GRB.CONTINUOUS) for i in len_n] for netload_scenario in range(self.netload_scenario_nums)]for ASS_day_scenario in range(len(self.ASS_time))]for TOU_scenario in range(len(self.tou_uncer_prob))])
+        SoH_ESS = np.array([m.addVar(lb=0,vtype=GRB.CONTINUOUS)])
         # ASS or DRB
         U_SpR_100 = np.array([[[[m.addVar(lb=0,ub=1,vtype=GRB.BINARY) for i in len_n] for netload_scenario in range(self.netload_scenario_nums)]for ASS_day_scenario in range(len(self.ASS_time))]for TOU_scenario in range(len(self.tou_uncer_prob))])
         U_SpR_95 = np.array([[[[m.addVar(lb=0,ub=1,vtype=GRB.BINARY) for i in len_n] for netload_scenario in range(self.netload_scenario_nums)]for ASS_day_scenario in range(len(self.ASS_time))]for TOU_scenario in range(len(self.tou_uncer_prob))])
@@ -184,7 +183,7 @@ class OnGrid_realtime_opt:
         Cap_SpR_rec = [m.addVar(lb=0,vtype=GRB.CONTINUOUS) for i in range(self.time_interval)]
         # ESS build
         battery_cap = m.addVar(lb=self.battery_lb/Cap_ESS_scale,ub=self.battery_ub/Cap_ESS_scale,vtype=GRB.INTEGER)                                                                                    #ESS儲能容量
-        # Cap_ESS_rec = m.addVar(lb=0,vtype=GRB.CONTINUOUS)                                                                                     
+        battery_cap_rec = m.addVar(lb=0,vtype=GRB.CONTINUOUS)                                                                                     
         pcs_cap = m.addVar(lb=self.pcs_lb/Cap_ESS_scale,ub=self.pcs_ub/Cap_ESS_scale,vtype=GRB.INTEGER)                                                                                    #ESS儲能功率
         ESS_initial_cost = m.addVar(lb=0,vtype=GRB.CONTINUOUS)  
         EssSOC_c = m.addVar(lb=0,vtype=GRB.CONTINUOUS)
@@ -224,7 +223,6 @@ class OnGrid_realtime_opt:
                 total_SpR_70_execution += (1/(1+r)**(y))*gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_day_scenario] * self.netload_scenario_days[netload_scenario] * SpR_70_quality_total_execution[TOU_scenario][ASS_day_scenario][netload_scenario][0] for netload_scenario in range(self.netload_scenario_nums)for ASS_day_scenario in range(len(self.ASS_time))for TOU_scenario in range(len(self.tou_uncer_prob)))
                 # 投標容量費
                 total_Cap_SpR_cost += (1/(1+r)**(y))*gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_day_scenario] * self.netload_scenario_days[netload_scenario] * Cap_SpR[int(i/4)] * Cap_SpR_scale * self.SpR_cap_price[i] for i in len_n for netload_scenario in range(self.netload_scenario_nums)for ASS_day_scenario in range(len(self.ASS_time))for TOU_scenario in range(len(self.tou_uncer_prob))) 
-            
         # Objective function
         m.setObjective(total_Pnet_cost                                                                                  # 電網購電成本
                     +total_SpR_energy_execution                                                                         # MGO即時備轉電能費
@@ -243,7 +241,7 @@ class OnGrid_realtime_opt:
         m.addConstr(EssSOC_c == self.Ess_efficiency/(self.time_scale), "ess_sizing_1")                                                  #ESS_c=det(t)*efficiency/Cap_ESS
         m.addConstr(EssSOC_dsc == 1/((self.time_scale)*self.Ess_efficiency), "ess_sizing_2")                                              #ESS_dsc=det(t)/(Cap_ESS*efficiency)
         m.addConstr(ESS_initial_cost == self.ess_cost*battery_cap*1000*Cap_ESS_scale + self.pcs_cost * pcs_cap*1000*Cap_ESS_scale, "ess_sizing_3")     #ESS儲能建置成本(容量*單位容量下的價格)
-        # m.addConstr(battery_cap*1000*Cap_ESS_scale * Cap_ESS_rec == 1, "ess_sizing_4")
+        m.addConstr(battery_cap*1000*Cap_ESS_scale * battery_cap_rec == 1, "ess_sizing_4")
         m.addConstr(pcs_cap*Cap_ESS_scale <= battery_cap*Cap_ESS_scale, "ess_sizing_5")
         # 電力平衡限制式
         for TOU_scenario in range(len(self.tou_uncer_prob)):
@@ -301,21 +299,26 @@ class OnGrid_realtime_opt:
                         m.addConstr(SoC_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] >= self.ESS_SOCmin * battery_cap*1000*Cap_ESS_scale, "ESS_soc_4")
                     # 儲能結束時間SOC等於開始時間SOC
                     m.addConstr(SoC_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][int(self.time_interval*self.time_scale-1)] == self.ESS_SOCmin * battery_cap*1000*Cap_ESS_scale, "ESS_soc_5")
-        # battery aging(放電->充電，計數一次循環)
+        # battery cycle aging(放電->充電，計數一次循環)
         for TOU_scenario in range(len(self.tou_uncer_prob)):
             for ASS_time_scenario in range(len(self.ASS_time)):
                 for netload_scenario in range(self.netload_scenario_nums):     
                     for i in len_n:
-                        m.addConstr(Uess_cycle[TOU_scenario][ASS_time_scenario][netload_scenario][i] == Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i-1] * (1-Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i]))
-                        # m.addConstr(Uess_cycle[TOU_scenario][ASS_time_scenario][netload_scenario][i] == Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i-1] * (Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i-1]-Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i]))
-                        m.addConstr(DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] * battery_cap*1000*Cap_ESS_scale == Pess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i]/(self.time_scale*self.Ess_efficiency))
-                    m.addConstr(SoC_avg[TOU_scenario][ASS_time_scenario][netload_scenario][0] == gp.quicksum(SoC_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] for i in len_n)/(self.time_interval*self.time_scale))
+                        m.addConstr(Uess_cycle[TOU_scenario][ASS_time_scenario][netload_scenario][i] == Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i] * (1-Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i-1]))
+                        m.addConstr(DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] == Pess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i]* battery_cap_rec/(self.time_scale*self.Ess_efficiency))
+                        m.addConstr(cyc_aging[TOU_scenario][ASS_time_scenario][netload_scenario][i] == self.cyc_a*DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i]*DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] + self.cyc_b*DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i])
         # battery calender aging
         for TOU_scenario in range(len(self.tou_uncer_prob)):
             for ASS_time_scenario in range(len(self.ASS_time)):
                 for netload_scenario in range(self.netload_scenario_nums):     
-                    m.addConstr(SoC_avg[TOU_scenario][ASS_time_scenario][netload_scenario][0] == gp.quicksum(SoC_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] for i in len_n)/(self.time_interval*self.time_scale))
+                    m.addConstr(SoC_avg[TOU_scenario][ASS_time_scenario][netload_scenario][0] == gp.quicksum(SoC_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] * battery_cap_rec for i in len_n)/(self.time_interval*self.time_scale))
                     m.addConstr(cal_aging[TOU_scenario][ASS_time_scenario][netload_scenario][0] == self.cal_a*SoC_avg[TOU_scenario][ASS_time_scenario][netload_scenario][0]*SoC_avg[TOU_scenario][ASS_time_scenario][netload_scenario][0] + self.cal_b*SoC_avg[TOU_scenario][ASS_time_scenario][netload_scenario][0] + self.cal_c)
+        # SoH
+        expr = battery_cap*Cap_ESS_scale*1000
+        expr -= gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_time_scenario] * self.netload_scenario_days[netload_scenario] * cal_aging[TOU_scenario][ASS_time_scenario][netload_scenario][0] for netload_scenario in range(self.netload_scenario_nums) for ASS_time_scenario in range(len(self.ASS_time)) for TOU_scenario in range(len(self.tou_uncer_prob)))
+        expr -= gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_time_scenario] * self.netload_scenario_days[netload_scenario] * cyc_aging[TOU_scenario][ASS_time_scenario][netload_scenario][i] for i in len_n for netload_scenario in range(self.netload_scenario_nums) for ASS_time_scenario in range(len(self.ASS_time)) for TOU_scenario in range(len(self.tou_uncer_prob)))
+        m.addConstr(SoH_ESS[0] == expr, "SoH_ESS")
+        # 即時備轉限制式
         if(ASS_status == 1):
             # 即時備轉投標量
             for i in range(self.time_interval):
@@ -443,7 +446,7 @@ class OnGrid_realtime_opt:
                         # ESS 
                         self.PESS[TOU_scenario][ASS_time_scenario][netload_scenario][i] = Pess_c[TOU_scenario][ASS_time_scenario][netload_scenario][i].x-Pess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i].x
                         self.ESS_SOC[TOU_scenario][ASS_time_scenario][netload_scenario][i] = SoC_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i].x / self.battery_cap / 1000
-                        self.ESS_DOD[TOU_scenario][ASS_time_scenario][netload_scenario][i] = DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i].x / self.battery_cap
+                        self.ESS_DOD[TOU_scenario][ASS_time_scenario][netload_scenario][i] = DoD_ESS[TOU_scenario][ASS_time_scenario][netload_scenario][i].x
                         self.Uess_cycle[TOU_scenario][ASS_time_scenario][netload_scenario][i] = Uess_cycle[TOU_scenario][ASS_time_scenario][netload_scenario][i].x
                         self.Uess_c[TOU_scenario][ASS_time_scenario][netload_scenario][i] = Uess_c[TOU_scenario][ASS_time_scenario][netload_scenario][i].x
                         self.Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i] = Uess_dsc[TOU_scenario][ASS_time_scenario][netload_scenario][i].x
@@ -461,6 +464,7 @@ class OnGrid_realtime_opt:
         print("total_Ccap2_cost", gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_day_scenario] * self.netload_scenario_days[netload_scenario] * MAX_Ccap2[TOU_scenario][ASS_day_scenario][netload_scenario][0].x for netload_scenario in range(self.netload_scenario_nums)for ASS_day_scenario in range(len(self.ASS_time))for TOU_scenario in range(len(self.tou_uncer_prob))))
         print("SpR_fail_times", gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_day_scenario] * self.netload_scenario_days[netload_scenario] * U_SpR_fail[TOU_scenario][ASS_day_scenario][netload_scenario][0].x for i in len_n for netload_scenario in range(self.netload_scenario_nums)for ASS_day_scenario in range(len(self.ASS_time))for TOU_scenario in range(len(self.tou_uncer_prob))))
         print("total_cycle_cost", gp.quicksum(self.tou_uncer_prob[TOU_scenario] * self.ASS_time_uncer_prob[ASS_day_scenario] * self.netload_scenario_days[netload_scenario] * Uess_cycle[TOU_scenario][ASS_day_scenario][netload_scenario][i].x*100 for i in len_n for netload_scenario in range(self.netload_scenario_nums)for ASS_day_scenario in range(len(self.ASS_time))for TOU_scenario in range(len(self.tou_uncer_prob))))
+        print("SoH_ESS", SoH_ESS[0].x)
     def optimal_result_ouput(self):
         # 淨負載欄位資料
         self.Pbuild = np.array([[0.0 for i in self.len_n] for netload_scenario in range(self.netload_scenario_nums)])
